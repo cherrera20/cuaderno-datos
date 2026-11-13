@@ -1,0 +1,81 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unity Catalog, Bundles y CI/CD · Cuaderno de datos</title><meta name="description" content="Cursos y artículos de ingeniería de datos. Aprende con ejemplos de Databricks, Lakeflow, Python y SQL."><meta name="theme-color" content="#0d2350"><link rel="icon" href="/assets/favicon.svg"><link rel="preconnect" href="https://fonts.bunny.net"><link rel="stylesheet" href="https://fonts.bunny.net/css?family=bricolage-grotesque:400,500,600,700,800|newsreader:400,400i,600|jetbrains-mono:400,500&amp;display=swap"><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head><body><a class="skip" href="#contenido">Saltar al contenido</a><header class="site-header"><div><a class="brand" href="/" aria-label="Cuaderno de datos, inicio"><span class="brand-icon">cd<span>_</span></span><span>Cuaderno de datos</span></a><nav aria-label="Principal"><a href="/cursos/" aria-current="page">Cursos</a><a href="/articulos/">Artículos</a><a href="/sobre/">Sobre este cuaderno</a><a class="nav-news" href="/newsletter/">Newsletter<span>pronto</span></a></nav></div></header><main id="contenido"><div class="reading-layout wrap"><aside class="lesson-sidebar"><a class="back" href="/cursos/lakeflow/">← Lakeflow</a><details open><summary>Contenido del curso</summary><nav aria-label="Lecciones"><a href="/cursos/lakeflow/leccion-1/"><span>01</span>¿Qué es Lakeflow Declarative Pipelines?</a><a href="/cursos/lakeflow/leccion-2/"><span>02</span>Streaming Tables vs Materialized Views</a><a href="/cursos/lakeflow/leccion-3/"><span>03</span>Cómo funciona Lakeflow por dentro</a><a href="/cursos/lakeflow/leccion-4/"><span>04</span>Nuestro primer pipeline real en Databricks</a><a href="/cursos/lakeflow/leccion-5/"><span>05</span>Ingesta desde Kafka / Azure Event Hubs</a><a href="/cursos/lakeflow/leccion-6/"><span>06</span>De Bronze a Silver: Avro, parsing y limpieza</a><a href="/cursos/lakeflow/leccion-7/"><span>07</span>Data Quality con Expectations</a><a href="/cursos/lakeflow/leccion-8/"><span>08</span>CDC, SCD Type 1 y SCD Type 2 con AUTO CDC</a><a href="/cursos/lakeflow/leccion-9/"><span>09</span>Batch vs Streaming y Triggered vs Continuous</a><a href="/cursos/lakeflow/leccion-10/"><span>10</span>Joins, agregaciones y Watermarks en Streaming</a><a href="/cursos/lakeflow/leccion-11/"><span>11</span>Incremental Refresh y gestión del estado</a><a href="/cursos/lakeflow/leccion-12/"><span>12</span>Errores, Checkpoints y recuperación en Lakeflow</a><a href="/cursos/lakeflow/leccion-13/" aria-current="page"><span>13</span>Unity Catalog, Bundles y CI/CD</a><a href="/cursos/lakeflow/leccion-14/"><span>14</span>Monitorización, Event Log, métricas y costes</a><a href="/cursos/lakeflow/leccion-15/"><span>15</span>Arquitectura Lakeflow de producción</a><a href="/cursos/lakeflow/leccion-16/"><span>16</span>CDC vs Delta CDF y recálculo incremental de KPIs históricos</a><a href="/cursos/lakeflow/leccion-17/"><span>17</span>dbt vs Lakeflow Declarative Pipelines</a></nav></details></aside><article class="lesson" data-lesson="13"><header class="lesson-heading"><span class="section-kicker">Lakeflow, lección 13 de 17</span><h1>Unity Catalog, Bundles y CI/CD</h1><div class="reading-meta"><span>Christian Herrera</span><span>10 min de lectura orientativa</span></div><ul class="tags" aria-label="Temas"><li><a href="/tags/ci-cd/">ci-cd</a></li><li><a href="/tags/testing/">testing</a></li><li><a href="/tags/databricks/">databricks</a></li></ul></header><div class="prose"><p>Objetivo: desplegar exactamente el mismo pipeline Lakeflow en DEV, UAT y PROD, cambiando únicamente la configuración del entorno.</p><h2>1. ¿Qué problema resolvemos?</h2><p>Imagina que tenemos un pipeline que transforma tickets de Bronze a Silver y Gold.</p><p>Queremos utilizar el mismo código Python en tres entornos sin duplicarlo.</p><div><div><p>Git Repository</p>Python + YAML · Una única versión del código</div><div><p>Databricks Bundle</p>Define pipelines y entornos</div><img/><div><div><p>DEV</p><p>dev_catalog</p></div><div><p>UAT</p><p>uat_catalog</p></div><div><p>PROD</p><p>prod_catalog</p></div></div></div><p>En este esquema, cada entorno puede tener su propio workspace y catálogo de Unity Catalog.</p><p>Regla fundamental: el código de negocio es el mismo; lo que cambia es la configuración.</p><h2>2. ¿Qué es un Databricks Asset Bundle?</h2><p>Actualmente Databricks lo denomina Declarative Automation Bundle (antes Databricks Asset Bundle).</p><p>Es una manera de describir mediante YAML los recursos que queremos desplegar: pipelines, jobs, configuración, archivos y otros recursos de Databricks. Databricks on AWS</p><p>Nuestro repositorio tendrá esta estructura:</p><div>text<pre><code class="language-text">lakeflow-project/
+├── databricks.yml
+├── resources/
+│   └── tickets.pipeline.yml
+└── src/
+    └── tickets.py</code></pre></div><p>Tres archivos. Vamos a verlos.</p><h2>3. Archivo 1: lógica de negocio</h2><p><code>src/tickets.py</code></p><div>python<pre><code class="language-python">
+from pyspark import pipelines as dp
+from pyspark.sql import functions as F
+
+@dp.table(name="silver_tickets")
+def silver_tickets():
+    return (
+        spark.readStream.table("bronze_tickets")
+        .filter("amount &gt; 0")
+    )
+
+@dp.materialized_view(name="gold_sales")
+def gold_sales():
+    return (
+        spark.read.table("silver_tickets")
+        .groupBy("pharmacy_id")
+        .agg(F.sum("amount").alias("total"))
+    )
+</code></pre></div><p>Este archivo no contiene ninguna referencia a DEV, UAT o PROD.</p><p>Suponemos que <code>bronze_tickets</code> ya existe en el catálogo y esquema correspondiente.</p><h2>4. Archivo 2: definición del pipeline</h2><p><code>resources/tickets.pipeline.yml</code></p><div>yaml<pre><code class="language-yaml">
+resources:
+  pipelines:
+    tickets:
+      name: tickets-${bundle.target}
+
+      catalog: ${var.catalog}
+      schema: demo_lakeflow
+
+      serverless: true
+      continuous: false
+
+      libraries:
+        - file:
+            path: ../src/tickets.py
+</code></pre></div><p>Aquí definimos:</p><ul><li><p>Dónde publicaremos las tablas: <code>catalog</code> y <code>schema</code>.</p></li><li><p>Qué compute usaremos: <code>serverless</code>.</p></li><li><p>Cómo ejecutaremos el pipeline: <code>continuous: false</code> indica modo Triggered.</p></li><li><p>Qué código ejecutará: <code>tickets.py</code>.</p></li></ul><p>La ruta <code>../src/tickets.py</code> es relativa al archivo YAML.</p><p>El recurso <code>pipelines</code> y estas opciones están documentados en la referencia oficial de bundles para Azure Databricks. Microsoft Learn</p><h2>5. Archivo 3: configuración DEV, UAT y PROD</h2><p><code>databricks.yml</code></p><div>yaml<pre><code class="language-yaml">
+bundle:
+  name: learning-lakeflow
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog de destino
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      profile: databricks-dev
+    variables:
+      catalog: dev_catalog
+
+  uat:
+    mode: production
+    workspace:
+      profile: databricks-uat
+    variables:
+      catalog: uat_catalog
+
+  prod:
+    mode: production
+    workspace:
+      profile: databricks-prod
+    variables:
+      catalog: prod_catalog
+</code></pre></div><p>Los nombres de los catálogos y perfiles son ejemplos. Los perfiles deben existir previamente en la configuración de autenticación de Databricks CLI.</p><p>Fíjate en <code>mode: production</code> para UAT: es intencionado. Queremos que UAT se comporte como un despliegue estable, no como un entorno de desarrollo personal.</p><h2>6. Desplegar desde terminal</h2><p>Primero validamos:</p><div>bash<pre><code class="language-bash">databricks bundle validate -t dev</code></pre></div><p>Después desplegamos:</p><div>bash<pre><code class="language-bash">databricks bundle deploy -t dev</code></pre></div><p>Y ejecutamos el pipeline:</p><div>bash<pre><code class="language-bash">databricks bundle run -t dev tickets</code></pre></div><p>El mismo código para UAT:</p><div>bash<pre><code class="language-bash">databricks bundle validate -t uat
+databricks bundle deploy -t uat
+databricks bundle run -t uat tickets</code></pre></div><p>Y para PROD:</p><div>bash<pre><code class="language-bash">databricks bundle validate -t prod
+databricks bundle deploy -t prod</code></pre></div><p>En PROD normalmente dejaríamos que un Job programado ejecute el pipeline, en lugar de lanzarlo manualmente desde la terminal.</p><p>Diferencia importante: <code>deploy</code> actualiza la definición del recurso en Databricks; <code>run</code> ejecuta el recurso desplegado. No son la misma operación. Databricks on AWS</p><h2>7. Simula la promoción entre entornos</h2><div><p>Elige el entorno</p><div><p>DEV</p><p>UAT</p><p>PROD</p></div><div><div><p>Workspace / profile</p><p>databricks-prod</p></div><div><p>Unity Catalog</p><p>prod_catalog</p></div><div><p>Deployment mode</p><p>production</p></div><p>Tabla resultante</p><p>prod_catalog.demo_lakeflow.gold_sales</p></div><div><p>Comandos para este entorno</p><p>databricks bundle validate -t prod</p><p>databricks bundle deploy -t prod</p><p>databricks bundle run -t prod tickets</p></div>El Python permanece idéntico. Solo cambian los parámetros de despliegue.</div><h2>8. ¿Cómo encaja Unity Catalog?</h2><p>Unity Catalog determina dónde están los datos y quién puede acceder a ellos.</p><p>No basta con que el bundle declare un catálogo. La identidad que ejecuta el pipeline necesita permisos adecuados.</p><p>Por ejemplo:</p><div>sql<pre><code class="language-sql">GRANT USE CATALOG
+ON CATALOG dev_catalog
+TO `data-engineers`;
+
+GRANT USE SCHEMA, CREATE TABLE
+ON SCHEMA dev_catalog.demo_lakeflow
+TO `data-engineers`;</code></pre></div><p>Estos permisos son ilustrativos. Además, el pipeline necesitará permisos de lectura sobre las tablas fuente y otros privilegios según su operación.</p><p>En producción utilizaría un Service Principal para desplegar y ejecutar, con privilegios mínimos y una identidad controlada. Databricks</p><h2>9. ¿Cómo sería un CI/CD completo?</h2><div><div><p>Pull Request</p>Tests Python + validación YAML</div><div><p>Merge a main</p>Deploy DEV + smoke tests</div><div><p>Promoción UAT</p>Pruebas de integración</div><div><p>Aprobación → PROD</p>Mismo commit, configuración de producción</div></div><p>Para un equipo que utiliza Azure DevOps, estos pasos se podrían automatizar con Azure Pipelines.</p><p>Mi recomendación: utilizar el mismo commit en los tres entornos. Así garantizamos que lo probado en UAT es exactamente el código que desplegamos en PROD.</p><p>Y recuerda: hacer rollback del código no revierte automáticamente los datos Delta ya procesados. Es algo que deberíamos contemplar en el procedimiento de recuperación.</p><h2>10. Mini ejercicio</h2><div><p>Quieres desplegar <code>silver_tickets</code> en Serbia y posteriormente en otros países.</p><p>La lógica de transformación es idéntica, pero cada país tiene su propio catálogo Unity Catalog.</p><p>¿Qué diseño elegirías?</p><p><label>A. Crear un archivo Python diferente para cada país.</label><label>B. Reutilizar el mismo Python y parametrizar el catálogo en el bundle.</label><label>C. Publicar todos los países obligatoriamente en el mismo esquema.</label></p><div><p>¡Correcto!</p>Separar código y configuración permite escalar la misma lógica a múltiples países. Además, podemos parametrizar nombres de fuentes, secretos y otras opciones.</div></div><p>Qué debes recordar:</p><ul><li><p>Unity Catalog gestiona los datos, su organización y permisos.</p></li><li><p>Declarative Automation Bundles describe los recursos y su configuración como código.</p></li><li><p>CI/CD valida, despliega y promociona versiones entre entornos.</p></li><li><p>Un mismo código, distintas configuraciones es la base de una plataforma de datos escalable.</p></li></ul><p>Nos quedan 4 lecciones: observabilidad, arquitectura completa, CDC vs CDF e incremental refresh, y comparación con dbt.</p></div><div class="complete-box"><div><h3>Una idea más en tu cuaderno.</h3><p>Marca esta lección cuando hayas terminado de repasarla.</p></div><button class="button" id="mark-complete" aria-pressed="false">Marcar como completada</button></div><nav class="lesson-pager" aria-label="Continuar el curso"><a href="/cursos/lakeflow/leccion-12/">← Lección anterior</a><a class="button" href="/cursos/lakeflow/leccion-14/">Siguiente lección</a></nav><aside class="related"><h2>Relacionado</h2><ul><li><a href="/articulos/testing-pyspark-spark-4-3/"><span>Artículo</span>Probar transformaciones de PySpark con Spark 4.3</a></li><li><a href="/cursos/lakeflow/leccion-4/"><span>Lección 4</span>Nuestro primer pipeline real en Databricks</a></li><li><a href="/cursos/lakeflow/leccion-7/"><span>Lección 7</span>Data Quality con Expectations</a></li></ul></aside><p class="source-note">Material importado del <a href="https://chatgpt.com/share/6af62dc2-2ebc-83ed-b035-07a98702191a" target="_blank" rel="noopener noreferrer">curso original</a>. Simulaciones conservadas como ejemplos estáticos; para sus controles interactivos, consulta el original.</p></article></div></main><footer><div><a class="brand-foot" href="/">Cuaderno de datos</a><p>Por Christian Herrera. Aprender, construir y compartir.</p><a href="/cursos/">Cursos</a><a href="/articulos/">Artículos</a><a href="/newsletter/">Newsletter</a><small>© 2026</small></div></footer></body></html>

@@ -1,0 +1,72 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ingesta desde Kafka / Azure Event Hubs · Cuaderno de datos</title><meta name="description" content="Cursos y artículos de ingeniería de datos. Aprende con ejemplos de Databricks, Lakeflow, Python y SQL."><meta name="theme-color" content="#0d2350"><link rel="icon" href="/assets/favicon.svg"><link rel="preconnect" href="https://fonts.bunny.net"><link rel="stylesheet" href="https://fonts.bunny.net/css?family=bricolage-grotesque:400,500,600,700,800|newsreader:400,400i,600|jetbrains-mono:400,500&amp;display=swap"><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head><body><a class="skip" href="#contenido">Saltar al contenido</a><header class="site-header"><div><a class="brand" href="/" aria-label="Cuaderno de datos, inicio"><span class="brand-icon">cd<span>_</span></span><span>Cuaderno de datos</span></a><nav aria-label="Principal"><a href="/cursos/" aria-current="page">Cursos</a><a href="/articulos/">Artículos</a><a href="/sobre/">Sobre este cuaderno</a><a class="nav-news" href="/newsletter/">Newsletter<span>pronto</span></a></nav></div></header><main id="contenido"><div class="reading-layout wrap"><aside class="lesson-sidebar"><a class="back" href="/cursos/lakeflow/">← Lakeflow</a><details open><summary>Contenido del curso</summary><nav aria-label="Lecciones"><a href="/cursos/lakeflow/leccion-1/"><span>01</span>¿Qué es Lakeflow Declarative Pipelines?</a><a href="/cursos/lakeflow/leccion-2/"><span>02</span>Streaming Tables vs Materialized Views</a><a href="/cursos/lakeflow/leccion-3/"><span>03</span>Cómo funciona Lakeflow por dentro</a><a href="/cursos/lakeflow/leccion-4/"><span>04</span>Nuestro primer pipeline real en Databricks</a><a href="/cursos/lakeflow/leccion-5/" aria-current="page"><span>05</span>Ingesta desde Kafka / Azure Event Hubs</a><a href="/cursos/lakeflow/leccion-6/"><span>06</span>De Bronze a Silver: Avro, parsing y limpieza</a><a href="/cursos/lakeflow/leccion-7/"><span>07</span>Data Quality con Expectations</a><a href="/cursos/lakeflow/leccion-8/"><span>08</span>CDC, SCD Type 1 y SCD Type 2 con AUTO CDC</a><a href="/cursos/lakeflow/leccion-9/"><span>09</span>Batch vs Streaming y Triggered vs Continuous</a><a href="/cursos/lakeflow/leccion-10/"><span>10</span>Joins, agregaciones y Watermarks en Streaming</a><a href="/cursos/lakeflow/leccion-11/"><span>11</span>Incremental Refresh y gestión del estado</a><a href="/cursos/lakeflow/leccion-12/"><span>12</span>Errores, Checkpoints y recuperación en Lakeflow</a><a href="/cursos/lakeflow/leccion-13/"><span>13</span>Unity Catalog, Bundles y CI/CD</a><a href="/cursos/lakeflow/leccion-14/"><span>14</span>Monitorización, Event Log, métricas y costes</a><a href="/cursos/lakeflow/leccion-15/"><span>15</span>Arquitectura Lakeflow de producción</a><a href="/cursos/lakeflow/leccion-16/"><span>16</span>CDC vs Delta CDF y recálculo incremental de KPIs históricos</a><a href="/cursos/lakeflow/leccion-17/"><span>17</span>dbt vs Lakeflow Declarative Pipelines</a></nav></details></aside><article class="lesson" data-lesson="5"><header class="lesson-heading"><span class="section-kicker">Lakeflow, lección 5 de 17</span><h1>Ingesta desde Kafka / Azure Event Hubs</h1><div class="reading-meta"><span>Christian Herrera</span><span>10 min de lectura orientativa</span></div><ul class="tags" aria-label="Temas"><li><a href="/tags/ingesta/">ingesta</a></li><li><a href="/tags/kafka/">kafka</a></li><li><a href="/tags/streaming/">streaming</a></li></ul></header><div class="prose"><p>Objetivo: aprender a consumir eventos desde Azure Event Hubs con Lakeflow, almacenarlos en una tabla Bronze y entender cómo se gestionan los offsets.</p><p>Esta vez utilizaremos un ejemplo muy parecido al de vuestra plataforma de datos: eventos de tickets que llegan desde Event Hubs y se almacenan en Delta Lake.</p><h2>1. Arquitectura de nuestra ingesta</h2><div><div><p>Azure Event Hubs</p>Topic: analytical_ticket</div><p>Kafka protocol · TLS · puerto 9093</p><div><p>Lakeflow Pipeline</p>spark.readStream.format("kafka")Gestiona offsets y checkpoints</div><div><p>Bronze · raw_events</p>Streaming Table · Delta Lake · Unity Catalog</div></div><p>Databricks permite utilizar directamente el conector Kafka integrado para consumir Azure Event Hubs, sin instalar un conector específico de Event Hubs. Microsoft Learn</p><h2>2. Primero: ¿qué devuelve Kafka?</h2><p>Cuando Spark lee un evento, no devuelve directamente un ticket con campos como <code>ticket_id</code> o <code>amount</code>.</p><p>Devuelve una estructura similar a esta:</p><div class="table-scroll"><table><tbody><tr><th><p>Campo</p></th><th><p>Ejemplo</p></th></tr><tr><td><p>key</p></td><td><p>bytes del identificador</p></td></tr><tr><td><p>value</p></td><td><p>bytes del mensaje</p></td></tr><tr><td><p>topic</p></td><td><p>analytical_ticket</p></td></tr><tr><td><p>partition</p></td><td><p>2</p></td></tr><tr><td><p>offset</p></td><td><p>10542</p></td></tr><tr><td><p>timestamp</p></td><td><p>2026-11-12 10:35:00</p></td></tr></tbody></table></div><p><code>key</code> y <code>value</code> son binarios. Si utilizamos Avro, tendremos que deserializarlos posteriormente. En esta lección conservaremos el mensaje original.</p><p>Esto es especialmente útil en Bronze: si mañana cambia el esquema Avro, seguimos conservando los bytes recibidos.</p><h2>3. El código del pipeline</h2><p>Creamos un archivo <code>bronze_tickets.py</code> en nuestro pipeline Lakeflow.</p><p>Para la conexión necesitamos un namespace de Event Hubs, el nombre del Event Hub y una política SAS con permiso <code>Listen</code>.</p><p>El ejemplo utiliza un Databricks Secret Scope llamado <code>eventhubs</code> que contiene la clave SAS bajo el nombre <code>reader-key</code>. Debes configurar previamente ambos valores; no escribas la clave real en el código.</p><div>python<pre><code class="language-python">
+from pyspark import pipelines as dp
+from pyspark.sql import functions as F
+
+# Configuración de Event Hubs
+namespace = spark.conf.get("app.eh.namespace")
+topic = spark.conf.get("app.eh.topic")
+policy_name = spark.conf.get("app.eh.policy")
+
+# Recuperamos la clave desde Secrets
+policy_key = dbutils.secrets.get(
+    scope="eventhubs",
+    key="reader-key"
+)
+
+connection_string = (
+    f"Endpoint=sb://{namespace}.servicebus.windows.net/;"
+    f"SharedAccessKeyName={policy_name};"
+    f"SharedAccessKey={policy_key}"
+)
+
+jaas = (
+    "kafkashaded.org.apache.kafka.common.security."
+    "plain.PlainLoginModule required "
+    'username="$ConnectionString" '
+    f'password="{connection_string}";'
+)
+
+
+@dp.table(name="bronze_tickets")
+def bronze_tickets():
+
+    df = (
+        spark.readStream
+        .format("kafka")
+        .option(
+            "kafka.bootstrap.servers",
+            f"{namespace}.servicebus.windows.net:9093"
+        )
+        .option("subscribe", topic)
+        .option("kafka.security.protocol", "SASL_SSL")
+        .option("kafka.sasl.mechanism", "PLAIN")
+        .option("kafka.sasl.jaas.config", jaas)
+        .option("startingOffsets", "earliest")
+        .load()
+    )
+
+    return df.select(
+        "key",
+        "value",
+        "topic",
+        "partition",
+        "offset",
+        F.col("timestamp").alias("kafka_timestamp"),
+        F.current_timestamp().alias("ingest_time")
+    )
+</code></pre></div><p>La sintaxis de autenticación, incluido <code>kafkashaded.org.apache.kafka...</code>, sigue el ejemplo oficial de Azure Databricks. Microsoft Learn</p><p>En el apartado Configuration del pipeline, define los parámetros de ejemplo:</p><div>json<pre><code class="language-json">{
+  "app.eh.namespace": "mi-namespace-dev",
+  "app.eh.topic": "analytical_ticket",
+  "app.eh.policy": "reader"
+}</code></pre></div><p>Son nombres ilustrativos: sustitúyelos por los recursos autorizados de tu entorno de desarrollo.</p><p>Para ejecutar el pipeline necesitas también conectividad de red al endpoint de Event Hubs, permisos para leer el secreto y permisos de escritura en el catálogo/esquema de destino.</p><h2>4. ¿Qué ocurre con los offsets?</h2><p>Aquí está una de las ventajas más importantes de Lakeflow.</p><p>Supongamos que Kafka contiene los offsets 100, 101, 102, 103 y 104.</p><div><p>Simulador: checkpoints y offsets</p><div><p>Partition 0</p>Último procesado: 104</div><div><p>100</p><p>101</p><p>102</p><p>103</p><p>104</p></div><p>En la siguiente ejecución continúa desde el progreso registrado y procesa los offsets 103–104.</p></div><p>En Lakeflow no tienes que escribir manualmente:</p><div>python<pre><code class="language-python">df.writeStream \
+    .option("checkpointLocation", "...") \
+    .start()</code></pre></div><p>El pipeline administra el checkpoint del flujo.</p><p>Pero esto no significa que los offsets sean irrelevantes. Debes comprender cómo funcionan la retención de Event Hubs, el progreso del consumidor y la recuperación de fallos.</p><p>Dos detalles importantes:</p><ul><li><p><code>startingOffsets="earliest"</code> se aplica al inicio de una consulta nueva, no reinicia el consumo desde cero en cada ejecución.</p></li><li><p>Si Event Hubs elimina mensajes por retención antes de que el consumidor los lea, un checkpoint no permite recuperarlos.</p></li></ul><h2>5. Ejecutar y verificar Bronze</h2><p>Configura el pipeline en modo Triggered, así procesaremos los eventos disponibles y terminaremos la ejecución.</p><p>Al finalizar, consulta la tabla de destino (sustituyendo el catálogo y esquema por los tuyos):</p><div>sql<pre><code class="language-sql">SELECT
+    topic,
+    partition,
+    offset,
+    kafka_timestamp,
+    ingest_time,
+    length(value) AS payload_bytes
+FROM dev_catalog.demo_lakeflow.bronze_tickets
+ORDER BY kafka_timestamp DESC
+LIMIT 10;</code></pre></div><p>Si hay eventos disponibles y la conexión funciona, verás sus metadatos.</p><p>Para inspeccionar los mensajes, puedes utilizar <code>CAST(value AS STRING)</code> únicamente si conoces que el payload es texto, como JSON. En vuestro caso, si es Avro binario, ese cast no lo deserializa correctamente.</p><h2>6. Tres decisiones que tomaría para producción</h2><div class="table-scroll"><table><tbody><tr><th><p>Decisión</p></th><th><p>Recomendación</p></th></tr><tr><td><p>Bronze raw</p></td><td><p>Conservar <code>key</code>, <code>value</code>, <code>headers</code> y metadatos Kafka</p></td></tr><tr><td><p>Retención</p></td><td><p>Monitorizar el retraso de consumo frente a la retención de Event Hubs</p></td></tr><tr><td><p>Arquitectura</p></td><td><p>Separar ingesta Bronze de transformaciones Silver/Gold</p></td></tr></tbody></table></div><p>En vuestro proyecto, donde tenéis múltiples Event Hubs y contratos Avro en Apicurio, mantener Bronze raw separado de la deserialización tiene bastante sentido.</p><p>De hecho, Databricks recomienda desacoplar los pipelines de ingesta de los de transformación para facilitar el mantenimiento y la recuperación de errores. Microsoft Learn</p><p>También conviene saber que existe un conector Kafka gestionado de Lakeflow Connect, actualmente documentado como Beta, además del enfoque programático que hemos utilizado. Microsoft Learn</p><h2>7. Comprueba lo aprendido</h2><div><p>Pregunta:</p><p>Tu pipeline consume correctamente hasta el offset 5000. Lo detienes, llegan 100 eventos más y vuelves a ejecutarlo.</p><p>¿Qué debería suceder, suponiendo que no se han perdido mensajes y que el checkpoint sigue intacto?</p><div><label><p>A. Vuelve a procesar desde el offset 0 porque usamos <code>startingOffsets="earliest"</code>.</p></label><label>B. Continúa a partir del progreso guardado en el checkpoint.</label><label>C. Los 100 eventos se pierden porque el pipeline estaba detenido.</label></div><div><p>¡Correcto!</p>El checkpoint permite continuar desde el progreso confirmado sin volver a procesar normalmente los offsets anteriores.</div></div><p>Qué debes recordar: Lakeflow simplifica considerablemente la ingesta desde Event Hubs, pero no elimina la necesidad de comprender Kafka, offsets, retención y formatos de serialización.</p><p>En la lección 6 convertiremos esos bytes Avro en datos Silver utilizables, introduciendo los esquemas y los contratos de datos.</p></div><div class="complete-box"><div><h3>Una idea más en tu cuaderno.</h3><p>Marca esta lección cuando hayas terminado de repasarla.</p></div><button class="button" id="mark-complete" aria-pressed="false">Marcar como completada</button></div><nav class="lesson-pager" aria-label="Continuar el curso"><a href="/cursos/lakeflow/leccion-4/">← Lección anterior</a><a class="button" href="/cursos/lakeflow/leccion-6/">Siguiente lección</a></nav><aside class="related"><h2>Relacionado</h2><ul><li><a href="/cursos/lakeflow/leccion-2/"><span>Lección 2</span>Streaming Tables vs Materialized Views</a></li><li><a href="/cursos/lakeflow/leccion-6/"><span>Lección 6</span>De Bronze a Silver: Avro, parsing y limpieza</a></li><li><a href="/cursos/lakeflow/leccion-9/"><span>Lección 9</span>Batch vs Streaming y Triggered vs Continuous</a></li><li><a href="/cursos/lakeflow/leccion-10/"><span>Lección 10</span>Joins, agregaciones y Watermarks en Streaming</a></li></ul></aside><p class="source-note">Material importado del <a href="https://chatgpt.com/share/6af62dc2-2ebc-83ed-b035-07a98702191a" target="_blank" rel="noopener noreferrer">curso original</a>. Simulaciones conservadas como ejemplos estáticos; para sus controles interactivos, consulta el original.</p></article></div></main><footer><div><a class="brand-foot" href="/">Cuaderno de datos</a><p>Por Christian Herrera. Aprender, construir y compartir.</p><a href="/cursos/">Cursos</a><a href="/articulos/">Artículos</a><a href="/newsletter/">Newsletter</a><small>© 2026</small></div></footer></body></html>

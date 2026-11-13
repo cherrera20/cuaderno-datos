@@ -1,0 +1,176 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Probar transformaciones de PySpark con Spark 4.3 · Cuaderno de datos</title><meta name="description" content="Un proyecto mínimo con pytest para probar transformaciones en local, sin cluster, y saber qué queda fuera de un test unitario."><meta name="theme-color" content="#0d2350"><link rel="icon" href="/assets/favicon.svg"><link rel="preconnect" href="https://fonts.bunny.net"><link rel="stylesheet" href="https://fonts.bunny.net/css?family=bricolage-grotesque:400,500,600,700,800|newsreader:400,400i,600|jetbrains-mono:400,500&amp;display=swap"><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head><body><a class="skip" href="#contenido">Saltar al contenido</a><header class="site-header"><div><a class="brand" href="/" aria-label="Cuaderno de datos, inicio"><span class="brand-icon">cd<span>_</span></span><span>Cuaderno de datos</span></a><nav aria-label="Principal"><a href="/cursos/">Cursos</a><a href="/articulos/" aria-current="page">Artículos</a><a href="/sobre/">Sobre este cuaderno</a><a class="nav-news" href="/newsletter/">Newsletter<span>pronto</span></a></nav></div></header><main id="contenido"><article class="article-page wrap"><a class="back" href="/articulos/">← Artículos</a><header class="lesson-heading"><span class="section-kicker">Testing</span><h1>Probar transformaciones de PySpark con Spark 4.3</h1><p class="reading-meta">Christian Herrera, 8 min de lectura</p><ul class="tags" aria-label="Temas"><li><a href="/tags/testing/">testing</a></li><li><a href="/tags/pyspark/">pyspark</a></li><li><a href="/tags/spark/">spark</a></li><li><a href="/tags/calidad/">calidad</a></li></ul></header><div class="prose"><p>Un pipeline puede fallar por dos motivos distintos: porque llegan datos que no esperabas o porque tu transformación hace algo distinto de lo que crees. Las reglas de calidad en ejecución detectan lo primero. Lo segundo se detecta antes de desplegar, con tests.</p>
+<p>Este artículo monta un proyecto mínimo para probar transformaciones de PySpark en tu máquina. Todos los ejemplos se han ejecutado con PySpark 4.3.0, Python 3.12, Java 17 y pytest 9.2.</p>
+<h2>Qué necesitas</h2>
+<p>Spark 4.3 funciona con Java 17, 21 o 25 y con Python 3.11 o superior. Si tu máquina tiene Java 11, Spark no arranca.</p>
+<pre><code class="language-sh">python3 -m venv .venv
+.venv/bin/pip install &quot;pyspark==4.3.0&quot; pytest
+</code></pre>
+<p>No hace falta un cluster ni una cuenta de Databricks. <code>pip</code> instala un Spark completo que se ejecuta en local.</p>
+<h2>Escribe transformaciones que se puedan probar</h2>
+<p>La decisión que más facilita los tests se toma antes de escribirlos: cada transformación es una función que recibe un DataFrame y devuelve otro. No lee tablas, no escribe y no crea la sesión.</p>
+<pre><code class="language-python"># transformaciones.py
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+
+
+def limpiar_tickets(df: DataFrame) -&gt; DataFrame:
+    return (
+        df.withColumn(&quot;ticket&quot;, F.upper(F.trim(&quot;ticket&quot;)))
+        .filter(F.col(&quot;amount&quot;) &gt; 0)
+        .dropDuplicates([&quot;ticket&quot;])
+    )
+
+
+def ticket_medio(df: DataFrame) -&gt; DataFrame:
+    return df.groupBy(&quot;tienda&quot;).agg(F.avg(&quot;amount&quot;).alias(&quot;ticket_medio&quot;))
+
+
+def importe_a_numero(df: DataFrame) -&gt; DataFrame:
+    return df.withColumn(&quot;amount&quot;, F.col(&quot;amount_txt&quot;).cast(&quot;double&quot;))
+</code></pre>
+<p>El código que lee de Kafka o escribe en una tabla llama a estas funciones. Así el test puede darles tres filas escritas a mano en lugar de una fuente real.</p>
+<h2>Una sesión de Spark para todos los tests</h2>
+<p>Arrancar Spark tarda unos segundos. Con una sesión por test, una suite de cincuenta tests tardaría minutos. La fixture con <code>scope="session"</code> crea una sola sesión y la comparte.</p>
+<pre><code class="language-python"># tests/conftest.py
+import os
+import sys
+
+import pytest
+from pyspark.sql import SparkSession
+
+# Los workers de Python deben usar el mismo intérprete que el driver.
+os.environ[&quot;PYSPARK_PYTHON&quot;] = sys.executable
+
+
+@pytest.fixture(scope=&quot;session&quot;)
+def spark():
+    spark = (
+        SparkSession.builder.master(&quot;local[1]&quot;)
+        .appName(&quot;tests&quot;)
+        .config(&quot;spark.sql.shuffle.partitions&quot;, &quot;1&quot;)
+        .config(&quot;spark.sql.session.timeZone&quot;, &quot;UTC&quot;)
+        .config(&quot;spark.ui.enabled&quot;, &quot;false&quot;)
+        .getOrCreate()
+    )
+    yield spark
+    spark.stop()
+</code></pre>
+<p>Cada línea de configuración tiene un motivo:</p>
+<table>
+<thead>
+<tr>
+<th>Configuración</th>
+<th>Motivo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PYSPARK_PYTHON</code></td>
+<td>Sin ella, los workers usan el <code>python3</code> del sistema. Si su versión es distinta a la del entorno virtual, los tests fallan con <code>PYTHON_VERSION_MISMATCH</code>.</td>
+</tr>
+<tr>
+<td><code>local[1]</code></td>
+<td>Un solo hilo. Suficiente para pocas filas y más predecible.</td>
+</tr>
+<tr>
+<td><code>spark.sql.shuffle.partitions</code> a 1</td>
+<td>El valor por defecto es 200. Con tres filas, cada <code>groupBy</code> crearía 200 tareas casi vacías.</td>
+</tr>
+<tr>
+<td><code>spark.sql.session.timeZone</code> a UTC</td>
+<td>Los tests con fechas dan el mismo resultado en tu portátil y en el servidor de CI.</td>
+</tr>
+<tr>
+<td><code>spark.ui.enabled</code> a false</td>
+<td>Los tests no necesitan la interfaz web y así no ocupan un puerto.</td>
+</tr>
+</tbody>
+</table>
+<h2>Comparar DataFrames</h2>
+<p>PySpark incluye dos funciones para tests en <code>pyspark.testing</code>: <code>assertDataFrameEqual</code> y <code>assertSchemaEqual</code>. Existen desde Spark 3.5, así que no necesitas una librería externa.</p>
+<pre><code class="language-python"># tests/test_transformaciones.py
+from pyspark.testing import assertDataFrameEqual
+
+from transformaciones import limpiar_tickets
+
+
+def test_limpiar_tickets_descarta_importes_no_positivos_y_duplicados(spark):
+    entrada = spark.createDataFrame(
+        [(&quot; t-1 &quot;, &quot;Madrid&quot;, 12.5), (&quot;T-1&quot;, &quot;Madrid&quot;, 12.5), (&quot;T-2&quot;, &quot;Madrid&quot;, -4.0)],
+        &quot;ticket string, tienda string, amount double&quot;,
+    )
+    esperado = spark.createDataFrame(
+        [(&quot;T-1&quot;, &quot;Madrid&quot;, 12.5)],
+        &quot;ticket string, tienda string, amount double&quot;,
+    )
+
+    assertDataFrameEqual(limpiar_tickets(entrada), esperado)
+</code></pre>
+<p>Las tres filas de entrada cubren las tres reglas de la función: un identificador con espacios y minúsculas, un duplicado y un importe negativo.</p>
+<p>Por defecto, <code>assertDataFrameEqual</code> se comporta así:</p>
+<ul>
+<li><strong>No compara el orden de las filas.</strong> Spark no garantiza un orden si no hay un <code>orderBy</code>. Si el orden forma parte del resultado, usa <code>checkRowOrder=True</code>.</li>
+<li><strong>Compara los decimales con tolerancia.</strong> <code>rtol</code> vale <code>1e-5</code> y <code>atol</code> vale <code>1e-8</code>, de modo que <code>10.05</code> y <code>10.050000001</code> se consideran iguales.</li>
+<li><strong>No distingue columnas que admiten nulos de las que no.</strong> <code>ignoreNullable</code> vale <code>True</code>.</li>
+<li><strong>Sí compara el nombre, el tipo y el orden de las columnas.</strong></li>
+</ul>
+<p>Cuando un test falla, el mensaje indica qué filas difieren:</p>
+<pre><code class="language-text">PySparkAssertionError: [DIFFERENT_ROWS] Results do not match: ( 50.00000 % )
+*** actual ***
+
+
+*** expected ***
+  Row(ticket='T-1', tienda='Madrid', amount=12.5)
++ Row(ticket='T-2', tienda='Madrid', amount=-4.0)
+</code></pre>
+<h2>Probar el esquema</h2>
+<p>Un cambio de tipo en una columna puede romper a quien lee tu tabla aunque los valores sean correctos. <code>assertSchemaEqual</code> lo comprueba sin necesitar datos:</p>
+<pre><code class="language-python">from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+from pyspark.testing import assertSchemaEqual
+
+from transformaciones import ticket_medio
+
+
+def test_ticket_medio_mantiene_el_esquema(spark):
+    entrada = spark.createDataFrame([], &quot;ticket string, tienda string, amount double&quot;)
+    esperado = StructType(
+        [
+            StructField(&quot;tienda&quot;, StringType()),
+            StructField(&quot;ticket_medio&quot;, DoubleType()),
+        ]
+    )
+
+    assertSchemaEqual(ticket_medio(entrada).schema, esperado)
+</code></pre>
+<h2>Probar que algo falla</h2>
+<p>Desde Spark 4.0, el modo ANSI está activado por defecto. Una conversión inválida ya no devuelve <code>NULL</code> en silencio: lanza un error. Un test puede fijar ese comportamiento para que nadie lo cambie sin darse cuenta.</p>
+<pre><code class="language-python">import pytest
+from pyspark.errors import NumberFormatException
+
+from transformaciones import importe_a_numero
+
+
+def test_importe_no_numerico_falla_con_ansi(spark):
+    entrada = spark.createDataFrame([(&quot;12,50&quot;,)], &quot;amount_txt string&quot;)
+
+    with pytest.raises(NumberFormatException):
+        importe_a_numero(entrada).collect()
+</code></pre>
+<p>El <code>collect()</code> es necesario. Las transformaciones de Spark son perezosas: sin una acción, la conversión no se ejecuta y el error no aparece.</p>
+<p>Si prefieres que un importe inválido se convierta en <code>NULL</code>, usa <code>try_cast</code> en la transformación y cambia el test para que espere ese <code>NULL</code>.</p>
+<h2>Ejecutar los tests</h2>
+<pre><code class="language-sh">PYTHONPATH=. .venv/bin/python -m pytest tests -q
+</code></pre>
+<pre><code class="language-text">....                                                                     [100%]
+4 passed in 5.60s
+</code></pre>
+<p>De esos cinco segundos, la mayor parte es el arranque de Spark. Cada test adicional añade décimas.</p>
+<h2>Qué no cubre un test unitario</h2>
+<p>Estos tests comprueban la lógica de una transformación con datos pequeños y controlados. Quedan fuera:</p>
+<ul>
+<li><strong>Los datos reales.</strong> Un test no sabe qué llegará mañana por el origen. Para eso están las reglas de calidad en ejecución, como las Expectations de Lakeflow.</li>
+<li><strong>El streaming con estado.</strong> Los watermarks, los datos tardíos y la recuperación desde un checkpoint dependen del tiempo y de varias ejecuciones. Necesitan una prueba de integración.</li>
+<li><strong>La plataforma.</strong> Los permisos, Unity Catalog y la configuración del pipeline se validan desplegando en un entorno de desarrollo.</li>
+<li><strong>El rendimiento.</strong> Tres filas no dicen nada sobre cómo se comporta un join con millones.</li>
+</ul>
+<p>Un reparto razonable: muchos tests unitarios para la lógica, unas pocas pruebas de integración para el pipeline completo y reglas de calidad para los datos.</p></div><aside class="related"><h2>Relacionado</h2><ul><li><a href="/cursos/lakeflow/leccion-7/"><span>Lección 7</span>Data Quality con Expectations</a></li><li><a href="/cursos/lakeflow/leccion-6/"><span>Lección 6</span>De Bronze a Silver: Avro, parsing y limpieza</a></li><li><a href="/cursos/lakeflow/leccion-13/"><span>Lección 13</span>Unity Catalog, Bundles y CI/CD</a></li></ul></aside><a class="button" href="/cursos/lakeflow/">Abrir el curso de Lakeflow</a></article></main><footer><div><a class="brand-foot" href="/">Cuaderno de datos</a><p>Por Christian Herrera. Aprender, construir y compartir.</p><a href="/cursos/">Cursos</a><a href="/articulos/">Artículos</a><a href="/newsletter/">Newsletter</a><small>© 2026</small></div></footer></body></html>
