@@ -329,3 +329,42 @@ progress::-moz-progress-bar{background:var(--blue)}
 .tag-group{margin-bottom:48px}
 .tag-group>h2{font-size:26px;margin-bottom:12px}
 .tag-group>h2 a:hover{color:var(--blue)}
+
+/* CV (/cv/): una columna, tranquila, pensada para imprimirse en dos páginas A4. */
+.cv{max-width:900px;padding-top:56px}
+.cv-head{border-bottom:1px solid var(--ink);padding-bottom:24px}
+.cv-head h1{font-size:clamp(34px,5vw,52px);font-weight:800;letter-spacing:-.04em}
+.cv-role{margin:10px 0 14px;font-size:19px;font-weight:500;color:var(--blue)}
+.cv-contact{display:flex;flex-wrap:wrap;gap:4px 22px;list-style:none;margin:0;padding:0;font-size:15px;color:var(--muted)}
+.cv-contact a{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+.cv-contact a:hover{color:var(--blue)}
+.cv-download{margin-top:20px;padding:10px 16px}
+.cv-body{font-size:16px;line-height:1.55}
+.cv-body h2{font-size:15px;font-weight:700;letter-spacing:0;color:var(--blue);margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--grid)}
+.cv-body h3{font-size:18px;letter-spacing:-.015em;line-height:1.25;margin:22px 0 2px;break-after:avoid}
+.cv-body h3+p{margin:0 0 8px;color:var(--muted);font-size:14.5px}
+.cv-body h3+p em{font-style:normal}
+.cv-body p{margin:8px 0}
+.cv-body>p>em:only-child{font:13.5px var(--mono);font-style:normal;color:var(--muted)}
+.cv-body ul{margin:8px 0;padding-left:1.15em}
+.cv-body li{margin:5px 0;break-inside:avoid}
+.cv-body a{color:var(--blue);text-decoration:underline;text-underline-offset:3px}
+@media print{
+  @page{size:A4;margin:11mm 15mm}
+  body{background:#fff;font-size:10pt}
+  .site-header,body>footer,.skip,.cv-download{display:none}
+  .cv{max-width:none;padding:0}
+  .cv-head{padding-bottom:10px}
+  .cv-head h1{font-size:25pt}
+  .cv-role{font-size:11.5pt;margin:4px 0 6px}
+  .cv-contact{font-size:9pt}
+  .cv-body{font-size:9.3pt;line-height:1.34}
+  .cv-body h2{font-size:9.5pt;margin:11px 0 4px;padding-bottom:3px}
+  .cv-body h3{font-size:10.5pt;margin:9px 0 0}
+  .cv-body h3+p{font-size:8.8pt;margin-bottom:3px}
+  .cv-body p{margin:4px 0}
+  .cv-body>p>em:only-child{font-size:8.3pt}
+  .cv-body ul{margin:3px 0}
+  .cv-body li{margin:1.5px 0}
+  .cv-body a{color:inherit;text-decoration:none}
+}
